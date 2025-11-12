@@ -15,6 +15,7 @@
 typedef enum {
     BLOCK_NONE = 0,
     BLOCK_YELLOW,
+    BLOCK_GREEN,
     BLOCK_BLUE,
     BLOCK_RED,
     BLOCK_PURPLE,
@@ -22,11 +23,12 @@ typedef enum {
 
 typedef struct {
     BlockType type;
-    bool combo; // used by the combo system
+    bool isPartOfCombo; // used by the combo system
+    bool falling;
 } Block;
 
 // this colors are in the same order as the BlockType enum
-const Color BLOCK_COLORS[] = {{0, 0, 0, 0}, YELLOW, BLUE, RED, PURPLE};
+const Color BLOCK_COLORS[] = {{0, 0, 0, 0}, YELLOW, GREEN, BLUE, RED, PURPLE};
 
 typedef struct {
     Block items[PANEL_COLS];
@@ -48,25 +50,42 @@ typedef struct {
     } cursor;
 } Panel;
 
-Block *panel_get_block(Panel *panel, int row, int col) {
-    if(row < 0 || row > panel->rows.count - 1 || col < 0 || col >= PANEL_COLS) {
-        return NULL;
-    }
+bool is_block_outbounds(Panel *panel, int row, int col) {
+    return row < 0 || row >= panel->rows.count || col < 0 || col >= PANEL_COLS;
+}
 
+Block *get_block(Panel *panel, int row, int col) {
+    if(is_block_outbounds(panel, row, col)) return NULL;
     return &panel->rows.items[row].items[col];
 }
 
-bool panel_is_block(Panel *panel, int row, int col, BlockType type) {
-    if(row < 0 || row > panel->rows.count - 1 || col < 0 || col >= PANEL_COLS) {
-        return false;
-    }
+bool can_block_combo(Panel *panel, int row, int col, BlockType type) {
+    Block *b = get_block(panel, row, col);
+    if(b == NULL) return false;
 
-    Block b = panel->rows.items[row].items[col];
-    // TODO: the name of the function doesn't describe or let know the use of b.combo
-    return !b.combo && b.type == type;
+    return b.type == type && !b.falling && !b.isPartOfCombo;
 }
 
-void update_panel(Panel *panel) {
+void swap_blocks(Panel *panel) {
+    int row = PANEL_ROWS - panel->cursor.y - 1;
+    int col = panel->cursor.x;
+
+    if(row < panel->rows.count) {
+        // swap blocks
+        // TODO: check for NULL
+        Block *leftBlock = panel_get_block(panel, row, col);
+        if(leftBlock == NULL) {
+        }
+
+        Block *rightBlock = panel_get_block(panel, row, col + 1);
+
+        BlockType t = leftBlock->type;
+        leftBlock->type = rightBlock->type;
+        rightBlock->type = t;
+    }
+}
+
+void update_cursor(Panel *panel) {
     if(IsKeyPressed(KEY_RIGHT)) {
         panel->cursor.x = MIN(panel->cursor.x + 1, PANEL_COLS - 2);
     } else if(IsKeyPressed(KEY_LEFT)) {
@@ -79,27 +98,17 @@ void update_panel(Panel *panel) {
         panel->cursor.y = MIN(panel->cursor.y + 1, PANEL_ROWS - 1);
     }
 
-    if(IsKeyPressed(KEY_X)) {
-        int row = PANEL_ROWS - panel->cursor.y - 1;
-        int col = panel->cursor.x;
+    if(IsKeyPressed(KEY_X)) swap_blocks(panel);
+}
 
-        if(row < panel->rows.count) {
-            // swap blocks
-            // TODO: check for NULL
-            Block *leftBlock = panel_get_block(panel, row, col);
-            Block *rightBlock = panel_get_block(panel, row, col + 1);
-
-            BlockType t = leftBlock->type;
-            leftBlock->type = rightBlock->type;
-            rightBlock->type = t;
-        }
-    }
+void update_panel(Panel *panel) {
+    update_cursor(panel);
 
     for(int row = 0; row < panel->rows.count; row++) {
         for(int col = 0; col < PANEL_COLS; col++) {
             Block *b = panel_get_block(panel, row, col);
 
-            if(b->type == BLOCK_NONE) continue;
+            if(b->type == BLOCK_NONE || b->falling) continue;
 
             // xCount describes matching block in the x axis
             // yCount describes matching block in the y axis
@@ -155,9 +164,17 @@ void update_panel(Panel *panel) {
 
     t = 0;
 
+    for(int row = 0; row < panel->rows.count; row++) {
+        for(int col = 0; col < PANEL_COLS; col++) {
+            panel_get_block(panel, row, col)->falling = false;
+        }
+    }
+
     for(int row = 0; row < panel->rows.count - 1; row++) {
         for(int col = 0; col < PANEL_COLS; col++) {
             Block *botBlock = panel_get_block(panel, row, col);
+            botBlock->falling = row > 0 && (panel_get_block(panel, row - 1, col)->falling || panel_get_block(panel, row - 1, col)->type == BLOCK_NONE);
+
             if(botBlock->type != BLOCK_NONE) continue;
 
             Block *topBlock = panel_get_block(panel, row + 1, col);
@@ -178,9 +195,15 @@ void draw_panel(Panel *panel) {
     for(int row = 0; row < panel->rows.count; row++) {
         for(int col = 0; col < PANEL_COLS; col++) {
             Block *block = panel_get_block(panel, row, col);
+            if(block->type == BLOCK_NONE) continue;
+
             Color color = BLOCK_COLORS[block->type];
+
+            if(block->falling) color = GRAY;
+
             int x = panel->pos.x + col * blockSize.x;
             int y = panel->pos.y + panel->size.y - (row + 1) * blockSize.y;
+
             DrawRectangle(x, y, blockSize.x, blockSize.y, color);
         }
     }
@@ -211,8 +234,8 @@ int main(void) {
     for(int j = 0; j < 10; j++) {
         Row row = {0};
 
-        for(int i = 0; i < PANEL_COLS - 1; i++) {
-            row.items[i].type = rand() % 5;
+        for(int i = 0; i < PANEL_COLS; i++) {
+            row.items[i].type = rand() % 5 + 1;
         }
 
         da_append(&panel.rows, row);
