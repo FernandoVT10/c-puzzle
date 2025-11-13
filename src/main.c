@@ -35,6 +35,8 @@ typedef struct {
 } Row;
 
 typedef struct {
+    // NOTE: the panel blocks are stored in the array from bottom to top, it means that the first row in the array
+    // is the bottom row in the panel.
     struct {
         // a dynamic array of rows with PANEL_COLS columns each
         Row *items;
@@ -63,7 +65,7 @@ bool can_block_combo(Panel *panel, int row, int col, BlockType type) {
     Block *b = get_block(panel, row, col);
     if(b == NULL) return false;
 
-    return b.type == type && !b.falling && !b.isPartOfCombo;
+    return b->type == type && !b->falling;
 }
 
 void swap_blocks(Panel *panel) {
@@ -72,12 +74,17 @@ void swap_blocks(Panel *panel) {
 
     if(row < panel->rows.count) {
         // swap blocks
-        // TODO: check for NULL
-        Block *leftBlock = panel_get_block(panel, row, col);
+        Block *leftBlock = get_block(panel, row, col);
         if(leftBlock == NULL) {
+            log_error("Left block of the cursor is NULL (row: %d, col: %d)", row, col);
+            return;
         }
 
-        Block *rightBlock = panel_get_block(panel, row, col + 1);
+        Block *rightBlock = get_block(panel, row, col + 1);
+        if(rightBlock == NULL) {
+            log_error("Right block of the cursor is NULL (row: %d, col: %d)", row, col);
+            return;
+        }
 
         BlockType t = leftBlock->type;
         leftBlock->type = rightBlock->type;
@@ -101,60 +108,60 @@ void update_cursor(Panel *panel) {
     if(IsKeyPressed(KEY_X)) swap_blocks(panel);
 }
 
-void update_panel(Panel *panel) {
-    update_cursor(panel);
-
+void update_combos(Panel *panel) {
     for(int row = 0; row < panel->rows.count; row++) {
         for(int col = 0; col < PANEL_COLS; col++) {
-            Block *b = panel_get_block(panel, row, col);
+            Block *b = get_block(panel, row, col);
 
             if(b->type == BLOCK_NONE || b->falling) continue;
 
             // xCount describes matching block in the x axis
             // yCount describes matching block in the y axis
-            // this algorithm only check the blocks in the right and the top
             int xCount = 1, yCount = 1;
 
-            while(panel_is_block(panel, row, col + xCount, b->type)) {
+            while(can_block_combo(panel, row, col + xCount, b->type)) {
                 xCount++;
             }
 
-            while(panel_is_block(panel, row + yCount, col, b->type)) {
+            while(can_block_combo(panel, row + yCount, col, b->type)) {
                 yCount++;
             }
 
             if(xCount >= 3) {
                 // skip the current (first) block
                 for(int i = 1; i < xCount; i++) {
-                    Block *block = panel_get_block(panel, row, col + i);
-                    block->combo = true;
+                    Block *block = get_block(panel, row, col + i);
+                    block->isPartOfCombo = true;
                 }
             }
 
             if(yCount >= 3) {
                 // skip the current (first) block
                 for(int i = 1; i < yCount; i++) {
-                    Block *block = panel_get_block(panel, row + i, col);
-                    block->combo = true;
+                    Block *block = get_block(panel, row + i, col);
+                    block->isPartOfCombo = true;
                 }
             }
 
-            if(xCount >= 3 || yCount >= 3) {
-                b->combo = true;
+            if(!b->isPartOfCombo) {
+                b->isPartOfCombo = xCount >= 3 || yCount >= 3;
             }
         }
     }
 
+    // remove all blocks that form combos
     for(int row = 0; row < panel->rows.count; row++) {
         for(int col = 0; col < PANEL_COLS; col++) {
-            Block *b = panel_get_block(panel, row, col);
-            if(!b->combo) continue;
+            Block *b = get_block(panel, row, col);
+            if(!b->isPartOfCombo) continue;
             b->type = BLOCK_NONE;
-            b->combo = false;
+            b->isPartOfCombo = false;
         }
     }
+}
 
-    // TODO: make this better!
+void update_gravity(Panel *panel) {
+    // TODO: this is temporal!
     static float t = 0;
     t += GetFrameTime();
 
@@ -166,24 +173,30 @@ void update_panel(Panel *panel) {
 
     for(int row = 0; row < panel->rows.count; row++) {
         for(int col = 0; col < PANEL_COLS; col++) {
-            panel_get_block(panel, row, col)->falling = false;
-        }
-    }
+            Block *block = get_block(panel, row, col);
+            block->falling = false;
 
-    for(int row = 0; row < panel->rows.count - 1; row++) {
-        for(int col = 0; col < PANEL_COLS; col++) {
-            Block *botBlock = panel_get_block(panel, row, col);
-            botBlock->falling = row > 0 && (panel_get_block(panel, row - 1, col)->falling || panel_get_block(panel, row - 1, col)->type == BLOCK_NONE);
+            if(row > 0) {
+                Block *botBlock = get_block(panel, row - 1, col);
+                block->falling = botBlock->falling || botBlock->type == BLOCK_NONE;
+            }
 
-            if(botBlock->type != BLOCK_NONE) continue;
+            if(block->type != BLOCK_NONE) continue;
 
-            Block *topBlock = panel_get_block(panel, row + 1, col);
-            if(topBlock->type == BLOCK_NONE) continue;
+            // can go outbunds but it's handled correctly
+            Block *topBlock = get_block(panel, row + 1, col);
+            if(topBlock == NULL || topBlock->type == BLOCK_NONE) continue;
 
-            botBlock->type = topBlock->type;
+            block->type = topBlock->type;
             topBlock->type = BLOCK_NONE;
         }
     }
+}
+
+void update_panel(Panel *panel) {
+    update_cursor(panel);
+    update_combos(panel);
+    update_gravity(panel);
 }
 
 void draw_panel(Panel *panel) {
@@ -194,12 +207,10 @@ void draw_panel(Panel *panel) {
 
     for(int row = 0; row < panel->rows.count; row++) {
         for(int col = 0; col < PANEL_COLS; col++) {
-            Block *block = panel_get_block(panel, row, col);
+            Block *block = get_block(panel, row, col);
             if(block->type == BLOCK_NONE) continue;
 
             Color color = BLOCK_COLORS[block->type];
-
-            if(block->falling) color = GRAY;
 
             int x = panel->pos.x + col * blockSize.x;
             int y = panel->pos.y + panel->size.y - (row + 1) * blockSize.y;
